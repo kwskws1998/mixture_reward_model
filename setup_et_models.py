@@ -1,12 +1,13 @@
-"""
-vast.ai 셋업 스크립트 - 한 번만 실행하면 됨
-사용법: python setup_et_models.py --et2-checkpoint ./checkpoints/et_predictor2_seed123
+"""Set up ET1 (Huang & Hollenstein 2023) + ET2 (Li & Rudzicz 2021) predictors.
 
-ET model 1 (Huang & Hollenstein 2023):
-  - SelectiveCacheForLM 레포에서 가중치 받아서 eyetrackpy 패키지 내부에 복사
+Run once:
+    python setup_et_models.py
 
-ET model 2 (Li & Rudzicz 2021):
-  - 사용자가 학습한 체크포인트(.pt / .safetensors) 경로를 환경변수로 등록
+Options:
+    --et2-checkpoint PATH   Explicit ET2 checkpoint path (.pt / .safetensors).
+                            If omitted, we try: HF cache → HF hub download → fail gracefully.
+    --skip-install          Skip pip install (already done by install.sh).
+    --clone-dir PATH        Where to clone SelectiveCacheForLM for ET1 weights.
 """
 
 import argparse
@@ -14,6 +15,10 @@ import os
 import shutil
 import subprocess
 import sys
+
+
+ET2_HF_REPO = "skboy/et_prediction_2"
+ET2_HF_FILE = "et_predictor2_seed123.safetensors"
 
 
 def run(cmd, check=True):
@@ -30,116 +35,163 @@ def find_eyetrackpy_root():
 
 
 def install_packages():
-    print("\n[1/4] eyetrackpy, tokenizer_aligner 설치 중...")
+    print("\n[1/4] Installing eyetrackpy, tokenizer_aligner...")
     run("pip install git+https://github.com/angelalopezcardona/tokenizer_aligner.git@v1.0.0 -q")
     run("pip install git+https://github.com/angelalopezcardona/eyetrackpy.git@v1.0.0 -q")
     run("pip install safetensors -q")
 
 
 def setup_et_model1(clone_dir="./SelectiveCacheForLM"):
-    print("\n[2/4] ET model 1 가중치 설정 중 (Huang & Hollenstein 2023)...")
+    print("\n[2/4] ET1 weights (Huang & Hollenstein 2023)...")
 
-    # SelectiveCacheForLM 클론
+    et_root = find_eyetrackpy_root()
+    if et_root is None:
+        raise ImportError("eyetrackpy not installed. Run install.sh first.")
+
+    dst_dir = os.path.join(et_root, "data_generator", "fixations_predictor_trained_1")
+    dst = os.path.join(dst_dir, "T5-tokenizer-BiLSTM-TRT-12-concat-3")
+
+    if os.path.isfile(dst):
+        print(f"  already installed: {dst}")
+        return
+
     if not os.path.isdir(clone_dir):
         run(f"git clone https://github.com/huangxt39/SelectiveCacheForLM.git {clone_dir}")
     else:
-        print(f"  {clone_dir} 이미 존재, 스킵")
+        print(f"  {clone_dir} already present")
 
     src = os.path.join(clone_dir, "FPmodels", "T5-tokenizer-BiLSTM-TRT-12-concat-3")
     if not os.path.isfile(src):
         raise FileNotFoundError(
-            f"가중치 파일을 찾을 수 없습니다: {src}\n"
-            "SelectiveCacheForLM 레포 구조가 바뀌었을 수 있습니다. 직접 확인해주세요."
+            f"ET1 weights not found at: {src}\n"
+            "SelectiveCacheForLM repo structure may have changed."
         )
 
-    # eyetrackpy 패키지 내부 경로에 복사
-    et_root = find_eyetrackpy_root()
-    if et_root is None:
-        raise ImportError("eyetrackpy가 설치되지 않았습니다. install_packages()를 먼저 실행하세요.")
-
-    dst_dir = os.path.join(
-        et_root, "data_generator", "fixations_predictor_trained_1"
-    )
-    dst = os.path.join(dst_dir, "T5-tokenizer-BiLSTM-TRT-12-concat-3")
     os.makedirs(dst_dir, exist_ok=True)
-
-    if not os.path.isfile(dst):
-        shutil.copy2(src, dst)
-        print(f"  가중치 복사 완료: {dst} ({os.path.getsize(dst)/1e6:.1f} MB)")
-    else:
-        print(f"  이미 존재: {dst}")
+    shutil.copy2(src, dst)
+    print(f"  copied: {dst} ({os.path.getsize(dst)/1e6:.1f} MB)")
 
 
-def setup_et_model2(checkpoint_path):
-    print("\n[3/4] ET model 2 체크포인트 확인 중 (Li & Rudzicz 2021)...")
+def _try_hf_cache():
+    """Return path to ET2 file in HF cache if already downloaded, else None."""
+    try:
+        from huggingface_hub import try_to_load_from_cache
+        p = try_to_load_from_cache(repo_id=ET2_HF_REPO, filename=ET2_HF_FILE)
+        if p and os.path.isfile(p):
+            return p
+    except Exception:
+        pass
+    return None
 
-    # .pt 또는 .safetensors 중 존재하는 것 탐색
-    resolved = None
-    for ext in ["", ".safetensors", ".pt"]:
-        candidate = checkpoint_path + ext if not checkpoint_path.endswith(ext) else checkpoint_path
+
+def _try_hf_download():
+    """Download ET2 from HF hub (cached for future use). Returns path or None."""
+    try:
+        from huggingface_hub import hf_hub_download
+        return hf_hub_download(repo_id=ET2_HF_REPO, filename=ET2_HF_FILE)
+    except Exception as e:
+        print(f"  HF download failed: {e}")
+        return None
+
+
+def _try_local_path(path):
+    """Resolve user-supplied path with automatic extension search."""
+    if not path:
+        return None
+    for ext in ["", ".safetensors", ".pt", ".bin"]:
+        candidate = path + ext if (ext and not path.endswith(ext)) else path
         if os.path.isfile(candidate):
-            resolved = candidate
-            break
+            return candidate
+    return None
+
+
+def setup_et_model2(checkpoint_path=None):
+    """Locate ET2 checkpoint via: explicit path → HF cache → HF download.
+
+    Never raises — if all fail, we just print guidance and let et2_wrapper
+    handle auto-download at first use.
+    """
+    print("\n[3/4] ET2 checkpoint (Li & Rudzicz 2021)...")
+
+    resolved = None
+    source = None
+
+    # 1. explicit path wins
+    if checkpoint_path:
+        resolved = _try_local_path(checkpoint_path)
+        if resolved:
+            source = "explicit path"
+
+    # 2. HF cache (install.sh already populates this)
+    if resolved is None:
+        resolved = _try_hf_cache()
+        if resolved:
+            source = "HF cache"
+
+    # 3. HF download
+    if resolved is None:
+        print(f"  not found locally or in HF cache — attempting download...")
+        resolved = _try_hf_download()
+        if resolved:
+            source = "HF hub (just downloaded)"
 
     if resolved is None:
-        raise FileNotFoundError(
-            f"ET model 2 체크포인트를 찾을 수 없습니다: {checkpoint_path}[.pt/.safetensors]\n"
-            "노트북에서 학습한 checkpoints/et_predictor2_seed123.pt (또는 .safetensors)를 "
-            "지정해주세요."
-        )
+        print("  WARNING: ET2 checkpoint could not be set up.")
+        print("  This is NOT fatal — et2_wrapper.py will auto-download at first use.")
+        print(f"  To preempt, either:")
+        print(f"    - Set ET2_CHECKPOINT_PATH to your own checkpoint, OR")
+        print(f"    - Check internet access + 'huggingface-cli login'")
+        return None
 
-    print(f"  체크포인트 확인: {resolved} ({os.path.getsize(resolved)/1e6:.1f} MB)")
+    print(f"  resolved via {source}: {resolved} ({os.path.getsize(resolved)/1e6:.1f} MB)")
 
-    # 환경변수 등록 안내 + .env 파일 생성
     abs_path = os.path.abspath(resolved)
     env_line = f"ET2_CHECKPOINT_PATH={abs_path}"
 
     with open(".env_et", "w") as f:
         f.write(env_line + "\n")
 
-    print(f"\n  아래 명령을 실행하거나 .env_et를 source 해주세요:")
-    print(f"  export {env_line}")
-    print(f"  또는: source .env_et")
+    print(f"\n  To pin this checkpoint for all sessions, run one of:")
+    print(f"    export {env_line}")
+    print(f"    source .env_et")
 
-    # 현재 프로세스에도 등록
     os.environ["ET2_CHECKPOINT_PATH"] = abs_path
     return abs_path
 
 
 def verify_setup():
-    print("\n[4/4] 설치 검증 중...")
+    print("\n[4/4] Verifying setup...")
 
-    # eyetrackpy model 1
     try:
         from eyetrackpy.data_generator.fixations_predictor_trained_1.fixations_predictor_model_1 import FixationsPredictor_1
-        print("  ✓ FixationsPredictor_1 import OK")
+        print("  OK   FixationsPredictor_1 import")
     except Exception as e:
-        print(f"  ✗ FixationsPredictor_1 import 실패: {e}")
+        print(f"  FAIL FixationsPredictor_1 import: {e}")
 
-    # et2_wrapper
     try:
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-        from et2_wrapper import FixationsPredictor_2
-        print("  ✓ FixationsPredictor_2 (wrapper) import OK")
+        from et2_wrapper import FixationsPredictor_2  # noqa: F401
+        print("  OK   et2_wrapper import")
     except Exception as e:
-        print(f"  ✗ FixationsPredictor_2 wrapper import 실패: {e}")
-        print("    et2_wrapper.py가 같은 디렉토리에 있는지 확인하세요.")
+        print(f"  FAIL et2_wrapper import: {e}")
+        print(f"       Check et2_wrapper.py is in the repo root.")
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--et2-checkpoint",
-        default="./checkpoints/et_predictor2_seed123",
-        help="ET model 2 체크포인트 경로 (확장자 없어도 됨, .pt/.safetensors 자동 탐색)",
+        default=None,
+        help="Explicit ET2 checkpoint path (extension auto-detected). "
+             "If omitted, we use HF cache → HF download.",
     )
     parser.add_argument(
         "--skip-install", action="store_true",
-        help="pip install 생략 (이미 설치된 경우)"
+        help="Skip pip install (install.sh already did this)",
     )
     parser.add_argument(
         "--clone-dir", default="./SelectiveCacheForLM",
-        help="SelectiveCacheForLM 클론 경로"
+        help="Where to clone SelectiveCacheForLM (for ET1 weights)",
     )
     args = parser.parse_args()
 
@@ -150,9 +202,9 @@ def main():
     setup_et_model2(args.et2_checkpoint)
     verify_setup()
 
-    print("\n✓ 셋업 완료. 이제 train을 실행하세요.")
-    print("  예시: python rlhf_rw/main.py -d OpenAssistant/oasst1 -m meta-llama/Meta-Llama-3-8B \\")
-    print("          --concat True --use_softprompt True -fmv 2 --features_used 0,1,0,1,0 --seed 44")
+    print("\nDone. Next steps:")
+    print("  python scripts/h1_bic_sanity_check.py   # FIRST: verify H1")
+    print("  bash run_modes.sh mixture               # mixture training")
 
 
 if __name__ == "__main__":
