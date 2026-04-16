@@ -162,15 +162,25 @@ class MixtureTokenModule(nn.Module):
 
     def _compute_descriptors(self, fixations, attn_mask=None):
         B = fixations.shape[0]
+        S = fixations.shape[1]
         descriptors = np.zeros((B, self.desc_size + 1), dtype=np.float32)
         fix_np = fixations.detach().float().cpu().numpy()
         if attn_mask is not None:
             mask_np = attn_mask.detach().cpu().numpy().astype(bool)
+            if mask_np.ndim == 1:
+                mask_np = mask_np[None, :]
         else:
             mask_np = np.ones(fix_np.shape[:2], dtype=bool)
 
         for b in range(B):
-            feats = fix_np[b][mask_np[b]]
+            row_fix = fix_np[b]
+            row_mask = mask_np[b] if b < mask_np.shape[0] else np.ones(S, dtype=bool)
+            # Length mismatch safety: crop both to the common min length.
+            # Upstream pad/remap can leave fixations and attention mask at
+            # different sequence lengths; rather than crash, just take the
+            # overlapping prefix.
+            n = min(row_fix.shape[0], row_mask.shape[0])
+            feats = row_fix[:n][row_mask[:n]]
             if self.log_transform:
                 feats = np.log1p(np.clip(feats, 0, None))
             try:
