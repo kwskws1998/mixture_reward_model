@@ -38,7 +38,6 @@ from transformers import AutoTokenizer
 
 
 def sample_oasst_responses(n_responses=100, min_tokens=20, seed=42):
-    """OASST1에서 assistant 응답 sample. 너무 짧은 건 제외."""
     from datasets import load_dataset
     ds = load_dataset("OpenAssistant/oasst1", split="train")
     rng = np.random.default_rng(seed)
@@ -48,8 +47,12 @@ def sample_oasst_responses(n_responses=100, min_tokens=20, seed=42):
         and r.get("lang") == "en"
         and len(r["text"].split()) >= min_tokens
     ]
-    print(f"[h1] {len(candidates)} eligible responses, sampling {n_responses}")
-    idx = rng.choice(len(candidates), size=min(n_responses, len(candidates)), replace=False)
+    print(f"[h1] {len(candidates)} eligible responses", end="")
+    if n_responses <= 0 or n_responses >= len(candidates):
+        print(" — using ALL")
+        return candidates
+    print(f", sampling {n_responses}")
+    idx = rng.choice(len(candidates), size=n_responses, replace=False)
     return [candidates[i] for i in idx]
 
 
