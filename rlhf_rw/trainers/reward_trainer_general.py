@@ -379,11 +379,33 @@ class RewardTrainerConstructorGeneral(RewardTrainerConstructor):
             )
             if mode == "all":
                 results = {}
+                failed = {}
                 rb_all_data = self.test_dataset
+                print(
+                    f"[eval_model] evaluating {len(rb_all_data)} subsets: "
+                    f"{sorted(rb_all_data.keys())}"
+                )
                 for subset_name, subset_data in rb_all_data.items():
-                    self.test_dataset = subset_data
-                    self.set_trainer_eval()
-                    results[subset_name] = self.trainer.evaluate()
+                    n = len(subset_data)
+                    if n == 0:
+                        print(f"  [skip] {subset_name}: 0 rows after filtering")
+                        failed[subset_name] = "empty_after_filter"
+                        continue
+                    try:
+                        self.test_dataset = subset_data
+                        self.set_trainer_eval()
+                        results[subset_name] = self.trainer.evaluate()
+                        print(
+                            f"  [ok] {subset_name}: n={n} "
+                            f"acc={results[subset_name].get('eval_accuracy', float('nan')):.3f}"
+                        )
+                    except Exception as e:
+                        print(f"  [fail] {subset_name}: {type(e).__name__}: {e}")
+                        failed[subset_name] = f"{type(e).__name__}: {e}"
+                        gc.collect()
+                        torch.cuda.empty_cache()
+                if failed:
+                    print(f"[eval_model] {len(failed)} subsets failed/skipped: {failed}")
             else:
                 self.test_dataset = rb_all_data[mode]
                 self.set_trainer_eval()

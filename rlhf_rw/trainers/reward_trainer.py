@@ -167,9 +167,9 @@ class RewardTrainerConstructor:
             self.test_dataset = raw_datasets["test"]
         else:
             rb_all = {}
-            for rb_subset in list(set(raw_datasets["test"]["subset"])):
+            for rb_subset in sorted(set(raw_datasets["test"]["subset"])):
                 rb_all[rb_subset] = raw_datasets["test"].filter(
-                    lambda x: x["subset"] == rb_subset
+                    lambda x, _s=rb_subset: x["subset"] == _s
                 )
             self.test_dataset = rb_all
 

@@ -1,3 +1,5 @@
+import hashlib
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -60,10 +62,20 @@ def _zero_descriptor(K, F, cov_type):
     return np.zeros(_descriptor_size(K, F, cov_type), dtype=np.float32)
 
 
+def _params_per_component(F, cov_type):
+    if cov_type == "full":
+        return F + F * (F + 1) // 2
+    if cov_type == "diag":
+        return 2 * F
+    if cov_type == "spherical":
+        return F + 1
+    if cov_type == "tied":
+        return F
+    raise ValueError(f"unknown cov_type: {cov_type}")
+
+
 def _fit_one(features, K, F, cov_type, reg_covar=1e-4, seed=0):
-    if not _SKLEARN_OK:
-        return _zero_descriptor(K, F, cov_type)
-    if features.size == 0:
+    if not _SKLEARN_OK or features.size == 0:
         return _zero_descriptor(K, F, cov_type)
 
     norms = np.linalg.norm(features, axis=1)
@@ -73,11 +85,9 @@ def _fit_one(features, K, F, cov_type, reg_covar=1e-4, seed=0):
     if n < max(K * 2, 4):
         return _zero_descriptor(K, F, cov_type)
 
-    effective_K = K
-    if cov_type == "full":
-        params_per_comp = F + F * (F + 1) // 2
-        max_K = max(1, n // (params_per_comp + 1))
-        effective_K = min(K, max_K)
+    params_per_comp = _params_per_component(F, cov_type)
+    max_K = max(1, n // (params_per_comp + 1))
+    effective_K = min(K, max_K)
 
     try:
         gmm = GaussianMixture(
@@ -93,47 +103,36 @@ def _fit_one(features, K, F, cov_type, reg_covar=1e-4, seed=0):
     except Exception:
         return _zero_descriptor(K, F, cov_type)
 
-    if effective_K < K:
-        full_weights = np.zeros(K, dtype=np.float32)
-        full_means = np.zeros((K, F), dtype=np.float32)
-        full_weights[:effective_K] = gmm.weights_
-        full_means[:effective_K] = gmm.means_
+    if effective_K == K:
+        return _flatten_gmm(gmm, K, F, cov_type)
 
-        if cov_type == "full":
-            full_covs = np.tile(np.eye(F)[None] * 1e-2, (K, 1, 1)).astype(np.float32)
-            full_covs[:effective_K] = gmm.covariances_
-        elif cov_type == "diag":
-            full_covs = np.ones((K, F), dtype=np.float32) * 1e-2
-            full_covs[:effective_K] = gmm.covariances_
-        elif cov_type == "spherical":
-            full_covs = np.ones(K, dtype=np.float32) * 1e-2
-            full_covs[:effective_K] = gmm.covariances_
-        else:
-            full_covs = gmm.covariances_
+    full_weights = np.zeros(K, dtype=np.float32)
+    full_means = np.zeros((K, F), dtype=np.float32)
+    full_weights[:effective_K] = gmm.weights_
+    full_means[:effective_K] = gmm.means_
 
-        class _Stub:
-            pass
-        s = _Stub()
-        s.weights_ = full_weights
-        s.means_ = full_means
-        s.covariances_ = full_covs
-        return _flatten_gmm(s, K, F, cov_type)
+    if cov_type == "full":
+        full_covs = np.tile(np.eye(F)[None] * 1e-2, (K, 1, 1)).astype(np.float32)
+        full_covs[:effective_K] = gmm.covariances_
+    elif cov_type == "diag":
+        full_covs = np.ones((K, F), dtype=np.float32) * 1e-2
+        full_covs[:effective_K] = gmm.covariances_
+    elif cov_type == "spherical":
+        full_covs = np.ones(K, dtype=np.float32) * 1e-2
+        full_covs[:effective_K] = gmm.covariances_
+    else:
+        full_covs = gmm.covariances_
 
-    return _flatten_gmm(gmm, K, F, cov_type)
+    class _Stub:
+        pass
+    s = _Stub()
+    s.weights_ = full_weights
+    s.means_ = full_means
+    s.covariances_ = full_covs
+    return _flatten_gmm(s, K, F, cov_type)
 
 
 class MixtureTokenModule(nn.Module):
-    """Per-response GMM summary token.
-
-    Forward:
-        fixations:  (B, S, F)  ET feature tensor
-        attn_mask:  (B, S)     1=real token, 0=padding (optional)
-
-    Returns:
-        token: (B, 1, hidden_size)
-        mask:  (B, 1)
-    """
-
     def __init__(
         self,
         num_features=5,
@@ -160,11 +159,32 @@ class MixtureTokenModule(nn.Module):
             nn.LayerNorm(hidden_size),
         )
 
-    def _compute_descriptors(self, fixations, attn_mask=None):
+        self._cache = None
+        self._pad_token_id = 0
+
+    def attach_cache(self, storage, pad_token_id):
+        self._cache = storage
+        self._pad_token_id = int(pad_token_id) if pad_token_id is not None else 0
+
+    def _cache_key(self, input_ids_row):
+        stripped = tuple(
+            int(x) for x in input_ids_row if int(x) != self._pad_token_id
+        )
+        payload = (
+            stripped,
+            self.K,
+            self.F,
+            self.cov_type,
+            bool(self.log_transform),
+        )
+        return "mix_" + hashlib.md5(str(payload).encode()).hexdigest()
+
+    def _compute_descriptors(self, fixations, attn_mask=None, input_ids=None):
         B = fixations.shape[0]
         S = fixations.shape[1]
         descriptors = np.zeros((B, self.desc_size + 1), dtype=np.float32)
         fix_np = fixations.detach().float().cpu().numpy()
+
         if attn_mask is not None:
             mask_np = attn_mask.detach().cpu().numpy().astype(bool)
             if mask_np.ndim == 1:
@@ -172,17 +192,26 @@ class MixtureTokenModule(nn.Module):
         else:
             mask_np = np.ones(fix_np.shape[:2], dtype=bool)
 
+        ids_np = input_ids.detach().cpu().numpy() if input_ids is not None else None
+
         for b in range(B):
+            key = None
+            if self._cache is not None and ids_np is not None:
+                key = self._cache_key(ids_np[b].tolist())
+                hit = self._cache.getItem(key)
+                if hit is not None and "desc" in hit:
+                    desc_arr = np.asarray(hit["desc"], dtype=np.float32)
+                    if desc_arr.shape == (self.desc_size + 1,):
+                        descriptors[b] = desc_arr
+                        continue
+
             row_fix = fix_np[b]
             row_mask = mask_np[b] if b < mask_np.shape[0] else np.ones(S, dtype=bool)
-            # Length mismatch safety: crop both to the common min length.
-            # Upstream pad/remap can leave fixations and attention mask at
-            # different sequence lengths; rather than crash, just take the
-            # overlapping prefix.
             n = min(row_fix.shape[0], row_mask.shape[0])
             feats = row_fix[:n][row_mask[:n]]
             if self.log_transform:
                 feats = np.log1p(np.clip(feats, 0, None))
+
             try:
                 desc = _fit_one(feats, self.K, self.F, self.cov_type)
                 valid = 1.0 if np.any(np.abs(desc) > 1e-8) else 0.0
@@ -191,10 +220,16 @@ class MixtureTokenModule(nn.Module):
             except Exception:
                 descriptors[b, -1] = 0.0
 
+            if key is not None and self._cache is not None:
+                try:
+                    self._cache.add(key, {"desc": descriptors[b].copy()})
+                except Exception:
+                    pass
+
         return torch.from_numpy(descriptors).to(fixations.device)
 
-    def forward(self, fixations, attn_mask=None):
-        desc = self._compute_descriptors(fixations, attn_mask)
+    def forward(self, fixations, attn_mask=None, input_ids=None):
+        desc = self._compute_descriptors(fixations, attn_mask, input_ids=input_ids)
         desc = desc.to(next(self.projector.parameters()).dtype)
         token_emb = self.projector(desc).unsqueeze(1)
         token_mask = torch.ones(

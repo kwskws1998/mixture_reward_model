@@ -1,21 +1,5 @@
-"""
-h1_bic_sanity_check.py
-======================
-H1 검증: per-response ET feature 분포가 단일 가우시안보다 mixture가 더 잘 fit하는가?
-
-실행:
-    cd final_agd-main
-    python scripts/h1_bic_sanity_check.py \
-        --n_responses 100 \
-        --k_max 6 \
-        --out_dir bic_results/
-
-결과:
-    bic_results/bic_curves.png        — K vs BIC 평균 곡선 + 응답별 곡선
-    bic_results/summary.json          — H1 검증 수치 요약
-
-페이퍼 figure 1 후보. K=1 우세하면 페이퍼 방향 재고 필요.
-"""
+"""H1 sanity check: is per-response ET feature distribution better fit by a
+K-component mixture than a single Gaussian? Outputs summary.json + bic_curves.png."""
 
 import argparse
 import json
@@ -73,7 +57,7 @@ def extract_features_per_response(responses, fp, tokenizer, device):
     return feature_sets
 
 
-def fit_bic_curve(features, k_values, cov_type="full", seed=0):
+def fit_bic_curve(features, k_values, cov_type="diag", seed=0):
     bics = []
     for k in k_values:
         if k > len(features) // 2:
@@ -95,7 +79,7 @@ def fit_bic_curve(features, k_values, cov_type="full", seed=0):
     return np.array(bics)
 
 
-def run_sweep(feature_sets, k_max=6, cov_type="full"):
+def run_sweep(feature_sets, k_max=8, cov_type="diag"):
     k_values = list(range(1, k_max + 1))
     bic_matrix = []
     for feats in tqdm(feature_sets, desc=f"GMM BIC ({cov_type})"):
@@ -180,8 +164,8 @@ def analyze(bic_matrix, k_values, out_dir):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--n_responses", type=int, default=100)
-    p.add_argument("--k_max", type=int, default=6)
-    p.add_argument("--cov_type", type=str, default="full",
+    p.add_argument("--k_max", type=int, default=8)
+    p.add_argument("--cov_type", type=str, default="diag",
                    choices=["full", "diag", "tied", "spherical"])
     p.add_argument("--rm_tokenizer", type=str, default="meta-llama/Meta-Llama-3-8B")
     p.add_argument("--out_dir", type=str, default="bic_results")

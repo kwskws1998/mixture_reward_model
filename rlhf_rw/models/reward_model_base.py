@@ -93,6 +93,8 @@ class MyRewardBase:
             dropout=dropout,
             log_transform=log_transform,
         )
+        pad_id = getattr(getattr(self, "tokenizer", None), "pad_token_id", 0)
+        self.mixture_module.attach_cache(self.memory_storage, pad_id)
         self.use_mixture_token = True
         self.mixture_K = K
         self.mixture_cov_type = cov_type
@@ -217,7 +219,7 @@ class MyRewardBase:
             if fixations_model_version == 1 and mix_in.dim() == 2:
                 mix_in = mix_in.unsqueeze(-1)
             mixture_token, mixture_mask = self.mixture_module(
-                mix_in, fixations_attention_mask
+                mix_in, fixations_attention_mask, input_ids=input_ids
             )
 
         fixations_normalized, fixations_attention_mask = self.process_fixations(
@@ -248,16 +250,14 @@ class MyRewardBase:
         if remap:
             fixations = mapped_fixations
             del mapped_fixations
-        if self.training is False and self.noise_factor > 0:
+        if self.training and self.noise_factor > 0:
             noise = torch.randn_like(fixations) * self.noise_factor
             fixations = fixations + noise
-            noise = noise.detach()
             del noise
         if fixations_model_version == 1:
             fixations = fixations.unsqueeze(2)
         fixations_projected = self.fixations_embedding_projector(fixations)
         fixations_normalized = self.norm_layer_fix(fixations_projected)
-        torch.cuda.empty_cache()
         return fixations_normalized, fixations_attention_mask
 
     @staticmethod

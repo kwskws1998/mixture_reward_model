@@ -34,15 +34,6 @@ class _RobertaRegressionModel(torch.nn.Module):
         return Y_pred
 
 class FixationsPredictor_2:
-    """
-    reward_model_base.py 호환 인터페이스.
-
-    reward_model_base.py의 호출 패턴:
-        fp = FixationsPredictor_2(modelTokenizer=rm_tokenizer, remap=False)
-        fixations, fix_attn, _, _, _, _ = fp._compute_mapped_fixations(input_ids, attention_mask)
-
-    fixations shape: (1, seq_len, 5)  — 5 ET features per RM token
-    """
 
     def __init__(self, modelTokenizer, remap=False,
                  checkpoint_path=None, roberta_model_name="roberta-base"):
@@ -78,7 +69,7 @@ class FixationsPredictor_2:
         self._load_checkpoint(ckpt)
         self.model.eval()
 
-        print(f"[et2_wrapper] FixationsPredictor_2 로드 완료: {ckpt}")
+        print(f"[et2_wrapper] FixationsPredictor_2 loaded: {ckpt}")
 
     def _load_checkpoint(self, path):
 
@@ -91,8 +82,8 @@ class FixationsPredictor_2:
                 return self._load_from_file(candidate)
 
         raise FileNotFoundError(
-            f"[et2_wrapper] 체크포인트를 찾을 수 없습니다: {path}[.safetensors/.pt]\n"
-            "ET2_CHECKPOINT_PATH 환경변수를 확인하거나 setup_et_models.py를 다시 실행하세요."
+            f"[et2_wrapper] checkpoint not found: {path}[.safetensors/.pt/.bin]\n"
+            "Check ET2_CHECKPOINT_PATH env var or re-run setup_et_models.py."
         )
 
     def _load_from_file(self, path):
@@ -103,7 +94,7 @@ class FixationsPredictor_2:
         else:
             state = torch.load(path, map_location=device)
         self.model.load_state_dict(state, strict=True)
-        print(f"[et2_wrapper] 가중치 로드: {path}")
+        print(f"[et2_wrapper] weights loaded: {path}")
 
     def _compute_mapped_fixations(self, input_ids_rm, attention_mask_rm=None):
         

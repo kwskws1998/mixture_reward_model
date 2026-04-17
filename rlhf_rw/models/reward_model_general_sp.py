@@ -242,7 +242,6 @@ def create_dynamic_class_RewardConcatenate(base_class=LlamaForSequenceClassifica
                 output_hidden_states=output_hidden_states,
                 return_dict=return_dict,
             )
-            torch.cuda.empty_cache()
             return output
 
     return MyRewardConcatenate

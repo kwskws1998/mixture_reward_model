@@ -214,6 +214,12 @@ if __name__ == "__main__":
     parser.add_argument("--fp_dropout", help="train or evaluate", default="0.1,0.3")
     parser.add_argument("--run_rewardbench", help="run RewardBench eval after training", default=False)
     parser.add_argument(
+        "--rb_char_filter",
+        type=int,
+        default=100000,
+        help="Char-length cap for RewardBench row filter. High default avoids dropping long AlpacaEval rows.",
+    )
+    parser.add_argument(
         "-fmv", "--fixations_model_version", help="fixations_model_version", default="1"
     )
     parser.add_argument("--features_used", help="features used", default="1,1,1,1,1")
@@ -366,9 +372,10 @@ if __name__ == "__main__":
             sys.path.insert(0, str(pathlib.Path(__file__).parent.resolve().parent.resolve()))
             from run_rewardbench import run_rewardbench
             run_rewardbench(
-                ckpt_dir   = folder_name_unique_path,
-                max_length = max_length,
-                batch_size = batch_size,
+                ckpt_dir=folder_name_unique_path,
+                max_length=max_length,
+                batch_size=batch_size,
+                rb_char_filter=int(args.rb_char_filter),
             )
 
     else:
