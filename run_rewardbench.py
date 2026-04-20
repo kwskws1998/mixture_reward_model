@@ -50,8 +50,8 @@ SAFETY_KEYS = [
     "xstest-should-respond",
     "donotanswer",
 ]
-REASONING_KEYS = [
-    "math-prm",
+MATH_KEYS = ["math-prm"]
+CODE_KEYS = [
     "hep-cpp",
     "hep-go",
     "hep-java",
@@ -59,6 +59,7 @@ REASONING_KEYS = [
     "hep-python",
     "hep-rust",
 ]
+REASONING_KEYS = MATH_KEYS + CODE_KEYS
 ALL_KNOWN_KEYS = CHAT_KEYS + CHATHARD_KEYS + SAFETY_KEYS + REASONING_KEYS
 
 
@@ -70,6 +71,20 @@ def wavg(accs, sizes, keys):
             s += accs[k] * n
             w += n
     return (s / w) if w > 0 else 0.0
+
+
+def reasoning_score(accs, sizes):
+    math_acc = wavg(accs, sizes, MATH_KEYS)
+    code_acc = wavg(accs, sizes, CODE_KEYS)
+    math_present = any(k in accs and sizes.get(k, 0) > 0 for k in MATH_KEYS)
+    code_present = any(k in accs and sizes.get(k, 0) > 0 for k in CODE_KEYS)
+    if math_present and code_present:
+        return 0.5 * math_acc + 0.5 * code_acc
+    if math_present:
+        return math_acc
+    if code_present:
+        return code_acc
+    return 0.0
 
 
 def _extract_acc(res):
@@ -101,11 +116,16 @@ def print_results(accs, subset_counts, label, missing=None):
     chat = wavg(accs, subset_counts, CHAT_KEYS)
     chat_hard = wavg(accs, subset_counts, CHATHARD_KEYS)
     safety = wavg(accs, subset_counts, SAFETY_KEYS)
-    reasoning = wavg(accs, subset_counts, REASONING_KEYS)
+    reasoning = reasoning_score(accs, subset_counts)
+    math_only = wavg(accs, subset_counts, MATH_KEYS)
+    code_only = wavg(accs, subset_counts, CODE_KEYS)
     print(f"  {'Chat':<20s} {chat * 100:.1f}%")
     print(f"  {'Chat Hard':<20s} {chat_hard * 100:.1f}%")
     print(f"  {'Safety':<20s} {safety * 100:.1f}%")
-    print(f"  {'Reasoning':<20s} {reasoning * 100:.1f}%")
+    print(
+        f"  {'Reasoning':<20s} {reasoning * 100:.1f}%   "
+        f"(math {math_only * 100:.1f}%, code {code_only * 100:.1f}%, 50/50 blend)"
+    )
     overall = (chat + chat_hard + safety + reasoning) / 4
     print(f"  {'Overall (4-cat)':<20s} {overall * 100:.1f}%")
     print("=" * 60)
@@ -233,22 +253,22 @@ def run_rewardbench(
     label = os.path.basename(ckpt_dir.rstrip("/"))
     print_results(accs, subset_counts, label, missing=missing)
 
+    chat = wavg(accs, subset_counts, CHAT_KEYS)
+    chat_hard = wavg(accs, subset_counts, CHATHARD_KEYS)
+    safety = wavg(accs, subset_counts, SAFETY_KEYS)
+    reasoning = reasoning_score(accs, subset_counts)
     out = {
         "accs": accs,
         "subset_counts": subset_counts,
         "missing_subsets": sorted(missing),
         "unknown_subsets": sorted(unknown),
-        "chat": wavg(accs, subset_counts, CHAT_KEYS),
-        "chat_hard": wavg(accs, subset_counts, CHATHARD_KEYS),
-        "safety": wavg(accs, subset_counts, SAFETY_KEYS),
-        "reasoning": wavg(accs, subset_counts, REASONING_KEYS),
-        "overall": sum(
-            [
-                wavg(accs, subset_counts, k)
-                for k in [CHAT_KEYS, CHATHARD_KEYS, SAFETY_KEYS, REASONING_KEYS]
-            ]
-        )
-        / 4,
+        "chat": chat,
+        "chat_hard": chat_hard,
+        "safety": safety,
+        "reasoning": reasoning,
+        "reasoning_math": wavg(accs, subset_counts, MATH_KEYS),
+        "reasoning_code": wavg(accs, subset_counts, CODE_KEYS),
+        "overall": (chat + chat_hard + safety + reasoning) / 4,
         "max_length": max_length,
         "rb_char_filter": rb_char_filter,
         "batch_size": batch_size,

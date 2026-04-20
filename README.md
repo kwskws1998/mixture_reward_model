@@ -171,11 +171,16 @@ was in the raw data but ended up with zero post-filter rows.
 - **Chat:** alpacaeval-easy, alpacaeval-length, alpacaeval-hard, mt-bench-easy, mt-bench-med
 - **Chat Hard:** mt-bench-hard, llmbar-natural, llmbar-adver-{neighbor,GPTInst,GPTOut,manual}
 - **Safety:** refusals-{dangerous,offensive}, xstest-should-{refuse,respond}, donotanswer
-- **Reasoning:** math-prm, hep-cpp, hep-go, hep-java, hep-js, hep-python, hep-rust
+- **Reasoning:** math-prm (math) + hep-cpp/go/java/js/python/rust (code)
+
+Chat / Chat Hard / Safety are per-prompt weighted averages over their subsets. **Reasoning is a 50/50 blend of the math-prm accuracy and the per-prompt weighted average across the six hep-\* subsets**, matching the Lambert et al. (2024) RewardBench paper's explicit rule that "we increase the weight of the PRM-Math subset so code and math abilities are weighed equally in the final number." This is **not** the same as a row-weighted average over all seven subsets — math-prm has 447 rows vs. 6×164 = 984 for code, so row-weighting would give math only ~31% of the Reasoning score instead of the required 50%. The saved `results_rewardbench.json` exposes `reasoning`, `reasoning_math`, and `reasoning_code` separately so you can verify.
+
+The final overall score is the unweighted mean of the four category scores.
 
 `math-prm` was previously uncategorised — it is now aggregated into Reasoning
-(447 rows, the largest single subset). The old `CODE_KEYS` name has been
-replaced with `REASONING_KEYS` to match current RewardBench terminology.
+(447 rows, the largest single subset). The old `CODE_KEYS` constant has been
+replaced with `MATH_KEYS`, `CODE_KEYS`, and `REASONING_KEYS` to match the
+current RewardBench taxonomy.
 
 ### Paper comparison (Table 5, OASST1, Llama-3-8B-Instruct)
 
@@ -323,10 +328,16 @@ but absent from `accs`, or present in `accs` but not aggregated into any categor
    (chars) dropped every `alpacaeval-easy`/`alpacaeval-hard` row. The fix
    decouples the two: RewardBench eval now uses `--rb_char_filter` (default
    `100000`), leaving tokenizer `max_length` untouched.
-2. **`math-prm` was uncategorised.** The largest RewardBench subset (447 rows)
-   was not in any of `CHAT_KEYS`/`CHATHARD_KEYS`/`SAFETY_KEYS`/`CODE_KEYS`, so
-   it contributed to no aggregate score. Added a `REASONING_KEYS` category
-   containing `math-prm + hep-*`, which matches current RewardBench taxonomy.
+2. **`math-prm` was uncategorised and Reasoning was scored wrong.** Two bugs
+   in one place. First, the largest RewardBench subset (447 rows) was not in
+   any of `CHAT_KEYS`/`CHATHARD_KEYS`/`SAFETY_KEYS`/`CODE_KEYS` and contributed
+   to no aggregate score. Second, even when added naively to a reasoning
+   aggregate, a simple per-prompt weighted average over `math-prm + hep-*`
+   gives math only ~31% of the Reasoning weight (447 rows of math vs. 984
+   rows of code). The paper requires math and code to each contribute 50%.
+   Fixed by splitting into `MATH_KEYS` and `CODE_KEYS` and computing
+   Reasoning as `0.5 * math_wavg + 0.5 * code_wavg`, with separate
+   `reasoning_math` / `reasoning_code` fields in the output JSON for audit.
 3. **Per-subset eval failures silently dropped subsets.** `eval_model(mode='all')`
    now wraps each subset's `trainer.evaluate()` in try/except and logs a
    summary of failed/skipped subsets.
